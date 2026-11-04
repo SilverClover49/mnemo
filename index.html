@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mnemo — memory-aware study OS</title>
+<meta name="description" content="Mnemo schedules revision by the forgetting curve so students revise what they are about to forget.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%233F4A2B'/%3E%3Ctext x='32' y='45' font-family='Georgia' font-size='40' fill='%23FAF6E8' text-anchor='middle'%3Em%3C/text%3E%3Ccircle cx='48' cy='40' r='4' fill='%23A63C2C'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+
+<div class="app">
+  <aside class="rail">
+    <div class="brand-wrap">
+      <a class="brand" href="#" data-view="today">mnemo<span class="brand-dot">.</span></a>
+      <p class="rail-tag">a study desk for memory</p>
+    </div>
+
+    <nav class="rail-nav" aria-label="Main">
+      <button class="nav-item" data-view="today">
+        <span class="nav-ico">◐</span><span>Today</span>
+      </button>
+      <button class="nav-item" data-view="library">
+        <span class="nav-ico">▤</span><span>Library</span>
+      </button>
+      <button class="nav-item" data-view="insights">
+        <span class="nav-ico">◔</span><span>Progress</span>
+      </button>
+      <button class="nav-item" data-view="guide">
+        <span class="nav-ico">?</span><span>How it works</span>
+      </button>
+    </nav>
+
+    <div class="rail-spacer"></div>
+
+    <div class="exam-mini" id="examMini"></div>
+
+    <button class="rail-demo" data-action="fast-forward"><span aria-hidden="true">↻</span> Demo · skip 7 days ahead</button>
+    <button class="rail-reset" data-action="reset-demo">Reset demo data</button>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <p class="crumb" id="crumb">Today</p>
+        <p class="crumb-sub" id="crumbSub">Your memory, on schedule</p>
+      </div>
+      <div class="top-actions">
+        <span class="top-date" id="topDate"></span>
+        <button class="btn accent" id="newTopicBtn" data-action="new-topic">New topic <span aria-hidden="true">+</span></button>
+      </div>
+    </header>
+
+    <div class="view" id="view"></div>
+  </main>
+</div>
+
+<nav class="mobile-nav" aria-label="Main">
+  <button data-view="today"><span>◐</span>Today</button>
+  <button data-view="library"><span>▤</span>Library</button>
+  <button data-view="insights"><span>◔</span>Progress</button>
+  <button data-view="guide"><span>?</span>How it works</button>
+</nav>
+
+<div id="modalRoot"></div>
+<div id="reviewRoot"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
