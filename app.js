@@ -3,7 +3,10 @@
 
   const DAY = 86400000;
   const STORE = "mnemo.v1";
+  const BACKUP_KEY = "mnemo.v1.backup";
   const REVIEW_THRESHOLD = 0.85;
+  const CALIBRATION_MIN = 8;
+  const MAX_BULK = 200;
 
   const GRADE = {
     again: { label: "Again", hint: "Missed it", score: 0.2, mult: 0.35, key: "1" },
@@ -35,6 +38,54 @@
 
   const daysBetween = (a, b) => (startOfDay(b) - startOfDay(a)) / DAY;
   const daysToExam = () => Math.max(0, Math.round((startOfDay(state.student.examDate) - startOfDay()) / DAY));
+
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const isoLocal = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+  const isoCompact = (ts) => isoLocal(ts).replace(/-/g, "");
+  const plural = (n, word) => `${n} ${n === 1 ? word : word + "s"}`;
+
+  function downloadFile(filename, type, content) {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  function icsEscape(value) {
+    return String(value).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  }
+
+  function buildCalendarICS() {
+    const horizon = clamp(daysToExam() || 21, 1, 21);
+    const start = startOfDay();
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+    const events = [];
+    for (let i = 0; i < horizon; i++) {
+      const day = start + i * DAY;
+      const end = day + DAY;
+      const due = state.topics.filter((t) => {
+        const at = Math.max(Date.now(), nextReviewAt(t));
+        return at >= day && at < end;
+      });
+      if (!due.length) continue;
+      events.push([
+        "BEGIN:VEVENT",
+        `UID:${isoCompact(day)}-${i}@mnemo.local`,
+        `DTSTAMP:${stamp}`,
+        `DTSTART;VALUE=DATE:${isoCompact(day)}`,
+        `DTEND;VALUE=DATE:${isoCompact(end)}`,
+        `SUMMARY:${icsEscape(`Mnemo: ${plural(due.length, "review")}`)}`,
+        `DESCRIPTION:${icsEscape(due.map((t) => t.title).join(", "))}`,
+        "END:VEVENT"
+      ].join("\r\n"));
+    }
+    return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Mnemo//Study Schedule//EN", "CALSCALE:GREGORIAN", ...events, "END:VCALENDAR"].join("\r\n") + "\r\n";
+  }
 
   /* ------------------------------------------------------------------ model */
 
@@ -101,11 +152,21 @@
     ];
 
     return {
-      version: 1,
+      version: 2,
+      sample: true,
       student: { name: "Aarav", examDate: startOfDay() + 38 * DAY, dailyGoal: 6 },
       streak: { count: 6, lastDay: startOfDay() },
       subjects,
       topics
+    };
+  }
+
+  function normalizeStudent(student) {
+    const s = student && typeof student === "object" ? student : {};
+    return {
+      name: String(s.name || "You").slice(0, 24),
+      examDate: Number(s.examDate) > 0 ? Number(s.examDate) : startOfDay() + 30 * DAY,
+      dailyGoal: clamp(Number(s.dailyGoal) || 6, 1, 20)
     };
   }
 
@@ -116,6 +177,11 @@
         const parsed = JSON.parse(raw);
         if (parsed && Array.isArray(parsed.topics) && Array.isArray(parsed.subjects)) {
           parsed.subjects.forEach((s, i) => { s.color = COLORS[i % COLORS.length]; });
+          parsed.student = normalizeStudent(parsed.student);
+          parsed.streak = parsed.streak && Number.isFinite(parsed.streak.count) ? parsed.streak : { count: 0, lastDay: 0 };
+          parsed.topics.forEach((t) => { t.history = Array.isArray(t.history) ? t.history : []; });
+          if (typeof parsed.sample !== "boolean") parsed.sample = true;
+          parsed.version = 2;
           return parsed;
         }
       }
@@ -129,8 +195,17 @@
     try { localStorage.setItem(STORE, JSON.stringify(next || state)); } catch (err) { /* private mode */ }
   }
 
+  function saveLocalBackup(snapshot) {
+    try { localStorage.setItem(BACKUP_KEY, JSON.stringify(snapshot)); } catch (err) { /* ignore */ }
+  }
+
+  function hasLocalBackup() {
+    try { return Boolean(localStorage.getItem(BACKUP_KEY)); } catch (err) { return false; }
+  }
+
   let state = loadState();
   const ui = { view: "today", subject: "all", query: "", showSubjectForm: false };
+  let installPrompt = null;
 
   const examTs = () => state.student.examDate;
   const subjectOf = (id) => state.subjects.find((s) => s.id === id) || { name: "Unfiled", color: "#6f6a5e", weight: 1 };
@@ -313,10 +388,18 @@
   }
 
   function ringSvg(value) {
-    const C = 276.46;
+    const v = clamp(value, 0, 1);
+    const c = 48, r = 44;
+    const end = -Math.PI / 2 + v * Math.PI * 2;
+    const x = (c + r * Math.cos(end)).toFixed(2);
+    const y = (c + r * Math.sin(end)).toFixed(2);
+    const large = v > 0.5 ? 1 : 0;
+    const d = v >= 0.999
+      ? `M${c},${c - r} A${r},${r} 0 1 1 ${c - 0.01},${c - r}`
+      : `M${c},${c - r} A${r},${r} 0 ${large} 1 ${x} ${y}`;
     return `<svg class="ring" viewBox="0 0 96 96" aria-hidden="true">
-      <circle class="track" cx="48" cy="48" r="44"></circle>
-      <circle class="fill" cx="48" cy="48" r="44" style="stroke-dasharray:${C};stroke-dashoffset:${C}"></circle>
+      <circle class="track" cx="${c}" cy="${c}" r="${r}"></circle>
+      <path class="fill" d="${d}"></path>
     </svg>`;
   }
 
@@ -366,20 +449,32 @@
   function renderChrome() {
     $("#topDate").textContent = fmtTopDate(Date.now());
     const d = daysToExam();
-    $("#examMini").innerHTML = `<span>Exam in</span><strong>${d} days</strong>${fmtDay(examTs())} · ${state.student.name}`;
+    $("#examMini").innerHTML = `<span>Exam in</span><strong>${d > 0 ? d + " days" : "today"}</strong>${fmtDay(examTs())} · ${esc(state.student.name)} · edit`;
+    const tag = $("#profileTag");
+    if (tag) {
+      tag.className = "profile-tag" + (state.sample ? " sample" : "");
+      tag.textContent = state.sample ? "Sample profile" : "My plan";
+    }
+    const demoBtn = document.querySelector(".rail-demo");
+    const resetBtn = document.querySelector('.rail-reset[data-action="reset-demo"]');
+    if (demoBtn) demoBtn.style.display = state.sample ? "" : "none";
+    if (resetBtn) resetBtn.style.display = state.sample ? "" : "none";
   }
 
   function renderToday() {
+    if (!state.topics.length) { renderEmptyToday(); return; }
     const plan = buildPlan();
     const due = dueTopics().length;
     const ready = readiness();
     const avg = avgRetention();
     const cal = calibration();
+    const calReady = cal.n >= CALIBRATION_MIN;
     const fadeCount = due;
     const headline = due === 0
       ? `<em>Nothing</em> needs you today.`
-      : `<em>${wordFor(fadeCount).replace(/^./, (c) => c.toUpperCase())} topics</em> need you today.`;
+      : `<em>${wordFor(fadeCount).replace(/^./, (c) => c.toUpperCase())} ${due === 1 ? "topic" : "topics"}</em> ${due === 1 ? "needs" : "need"} you today.`;
     const planLabel = plan.length + (due > plan.length ? ` of ${due}` : "");
+    const cta = due === 0 ? `Review the weakest ${plan.length}` : `Start today's recall · ${planLabel}`;
 
     const planRows = plan.length ? plan.map((t, i) => {
       const r = retention(t);
@@ -407,15 +502,23 @@
       : `Your confidence tracks your recall within <b>${Math.abs(calPts)} points</b>. That is rare.`;
 
     viewEl.innerHTML = `
+      ${state.sample ? `<div class="sample-banner">
+        <span><b>Sample plan.</b> These topics and review dates are seeded for a tour — not your record.</span>
+        <span class="actions">
+          <button class="icon-btn" data-action="start-fresh">Use my own plan</button>
+          <button class="icon-btn" data-action="open-data">Backup &amp; data</button>
+        </span>
+      </div>` : ""}
       <section class="hero">
         <div class="hero-copy">
           <p class="eyebrow">${fmtLongDay(Date.now())} · ${daysToExam()} days to exam</p>
           <h1 class="display">${greeting()}, ${esc(state.student.name)}.<br>${headline}</h1>
           <p class="lede">Mnemo keeps a stability score for every topic and schedules the reviews that hold it above 85% until exam day. Today's list is the shortest one that does the job.</p>
           <div class="hero-actions">
-            <button class="btn accent" data-action="start-plan">Start today's recall · ${planLabel} <span aria-hidden="true">→</span></button>
+            <button class="btn accent" data-action="start-plan">${cta} <span aria-hidden="true">→</span></button>
             <button class="btn ghost" data-view="guide">How it works</button>
           </div>
+          <button class="hero-plan-link" data-action="edit-plan">Exam ${fmtDay(examTs())} · daily goal ${state.student.dailyGoal} · edit plan</button>
         </div>
         <div class="readiness card ink">
           <div>
@@ -464,11 +567,15 @@
             <div class="chart-legend"><span><i></i>average retention if you keep this schedule</span></div>
           </div>
           <div class="card">
-            <p class="micro">Calibration</p>
-            <div class="calib-strip">
-              <span class="calib-num">${cal.n ? (calPts > 0 ? "+" : "") + calPts : "—"}<span style="font-size:18px">pts</span></span>
+            <p class="micro">Calibration ${state.sample ? '<span class="sample-badge">sample history</span>' : ""}</p>
+            ${calReady ? `<div class="calib-strip">
+              <span class="calib-num">${(calPts > 0 ? "+" : "") + calPts}<span style="font-size:18px">pts</span></span>
               <p class="calib-text">${calText}</p>
+            </div>` : `<div class="gate">
+              <span class="gate-count">${cal.n}<span style="font-size:13px;color:var(--muted)">/${CALIBRATION_MIN}</span></span>
+              <span class="gate-bar"><span style="width:${Math.min(100, (cal.n / CALIBRATION_MIN) * 100)}%"></span></span>
             </div>
+            <p class="small muted" style="margin-top:10px;line-height:1.55">Calibration unlocks after ${CALIBRATION_MIN} honest reviews. It compares the confidence you set with the grade you give.</p>`}
             <button class="icon-btn" style="margin-top:14px" data-view="insights">See calibration by subject →</button>
           </div>
         </div>
@@ -503,22 +610,44 @@
         <span>WEBNOVA '26 · Smart Education · HKBK College of Engineering</span>
       </footer>
 
-      <div class="demo-row">
+      ${state.sample ? `<div class="demo-row">
         <span class="micro">Demo</span>
         <button class="icon-btn" data-action="fast-forward">Skip 7 days ahead</button>
         <button class="icon-btn" data-action="reset-demo">Reset demo data</button>
-      </div>`;
-
-    animateRing(ready);
+        <button class="icon-btn" data-action="open-data">Backup &amp; data</button>
+      </div>` : `<div class="demo-row">
+        <span class="micro">Your data</span>
+        <button class="icon-btn" data-action="open-data">Backup &amp; data</button>
+        <button class="icon-btn" data-action="edit-plan">Edit exam plan</button>
+      </div>`}`;
   }
 
-  function animateRing(value) {
-    const fill = $(".ring .fill");
-    if (!fill) return;
-    const C = 276.46;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => { fill.style.strokeDashoffset = String(C * (1 - clamp(value, 0, 1))); });
-    });
+  function renderEmptyToday() {
+    viewEl.innerHTML = `
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">${fmtLongDay(Date.now())} · exam ${fmtDay(examTs())}</p>
+          <h1 class="display">Let's build your<br><em>study plan.</em></h1>
+          <p class="lede">Set your exam date, paste what you're studying, and Mnemo turns it into a daily recall queue. The note is what future-you will try to reproduce.</p>
+          <div class="hero-actions">
+            <button class="btn accent" data-action="bulk-add-open">Paste your topics <span aria-hidden="true">→</span></button>
+            <button class="btn ghost" data-action="new-topic">Add one topic</button>
+          </div>
+          <button class="hero-plan-link" data-action="edit-plan">Exam ${fmtDay(examTs())} · daily goal ${state.student.dailyGoal} · edit plan</button>
+        </div>
+        <div class="empty-panel">
+          <h2>Setup, in three steps</h2>
+          <ol class="empty-list">
+            <li><b>1</b><span><strong>Set the exam date.</strong> Every projection is measured against it.</span></li>
+            <li><b>2</b><span><strong>Paste topics.</strong> One per line, with an optional <code>| note</code> to recall against.</span></li>
+            <li><b>3</b><span><strong>Review daily.</strong> Six topics is a normal day; a minute each is enough.</span></li>
+          </ol>
+          <div class="empty-actions">
+            <button class="btn ghost sm" data-action="edit-plan">Set exam date</button>
+            <button class="btn ghost sm" data-view="guide">How it works</button>
+          </div>
+        </div>
+      </section>`;
   }
 
   function renderLibrary() {
@@ -541,6 +670,7 @@
             <label class="search"><span aria-hidden="true">⌕</span>
               <input id="libSearch" type="search" placeholder="Search topics" value="${esc(ui.query)}" aria-label="Search topics">
             </label>
+            <button class="btn ghost sm" data-action="bulk-add-open">Paste topics</button>
             <button class="btn ghost sm" data-action="new-subject-open">New subject</button>
           </div>
         </div>
@@ -575,7 +705,22 @@
   function renderLibraryGrid() {
     const grid = $("#libGrid");
     if (!grid) return;
+    if (!state.topics.length) {
+      grid.innerHTML = `<div class="empty-state">
+        <h3>Your library is empty</h3>
+        <p>Paste a syllabus or add one idea. Topics are what Mnemo schedules; the note is what you recall against.</p>
+        <div class="empty-actions">
+          <button class="btn accent sm" data-action="bulk-add-open">Paste topics</button>
+          <button class="btn ghost sm" data-action="new-topic">Add one</button>
+        </div>
+      </div>`;
+      return;
+    }
     const topics = filteredTopics();
+    if (!topics.length) {
+      grid.innerHTML = `<div class="empty-state"><h3>No matches</h3><p>Nothing matches that search in this subject. Try a shorter term or clear the filter.</p><button class="btn ghost sm" data-action="clear-filters">Clear filters</button></div>`;
+      return;
+    }
     grid.innerHTML = topics.map((t) => {
       const subj = subjectOf(t.subjectId);
       const r = retention(t);
@@ -617,7 +762,7 @@
         <article class="step">
           <div class="step-top"><span class="step-num">01</span><span class="step-when">Before the first review</span></div>
           <h3>Add what you're learning</h3>
-          <p>A topic is one idea plus the note you want to reproduce in the exam. Subject and note are the only inputs — there is no question bank to write.</p>
+          <p>A topic is one idea plus the note you want to reproduce in the exam. Paste a list one per line, or add them one at a time — there is no question bank to write.</p>
           <p class="why">Why it works: retrieval needs a clear target. One idea per topic keeps the target honest.</p>
         </article>
         <article class="step">
@@ -666,7 +811,7 @@
           <ul class="arch-list">
             <li>Charts are hand-written SVG, not a library</li>
             <li>No build step and no runtime dependencies</li>
-            <li>Responsive from 390px to a projector</li>
+            <li>Backup JSON, restore, and .ics calendar export are local</li>
           </ul>
         </article>
         <article class="arch-card">
@@ -691,7 +836,7 @@
       <section class="card guide-note">
         <h3>What the numbers mean — and what they don't</h3>
         <p>Every figure on screen can be recomputed from a topic's stability and last review. That is deliberate: if a judge asks where 92% came from, the answer is a formula, not a model.</p>
-        <p class="limits">Readiness assumes you keep the schedule and is not a predicted mark. Grades are self-reported, so honesty matters. Retention is a model, not a measurement.</p>
+        <p class="limits">Readiness assumes you keep the schedule and is not a predicted mark. Grades are self-reported, so honesty matters. Retention is a model, not a measurement. Calibration unlocks after ${CALIBRATION_MIN} honest reviews, because one review can swing it by 50 points.</p>
       </section>
 
       <footer class="page-foot">
@@ -703,7 +848,9 @@
   function renderInsights() {
     const cal = calibration();
     const calPts = Math.round(cal.mean);
-    const calLabel = cal.n === 0 ? "No data yet" : calPts > 0 ? "Overconfident" : calPts < 0 ? "Underconfident" : "Calibrated";
+    const calReady = cal.n >= CALIBRATION_MIN;
+    const sampleBadge = state.sample ? '<span class="sample-badge">sample</span>' : "";
+    const calLabel = !calReady ? "Collecting data" : calPts > 0 ? "Overconfident" : calPts < 0 ? "Underconfident" : "Calibrated";
     const calRows = state.subjects.map((s) => {
       const b = cal.bySubject[s.id];
       const v = b && b.n ? b.mean : 0;
@@ -742,6 +889,18 @@
       }).join("");
 
     viewEl.innerHTML = `
+      ${!state.topics.length ? `<section>
+        <p class="eyebrow">Evidence, not vibes</p>
+        <h1 class="display" style="font-size:clamp(38px,4vw,54px);margin-top:8px">Progress</h1>
+        <div class="empty-state" style="margin-top:24px">
+          <h3>Nothing to project yet</h3>
+          <p>Add a few topics and Mnemo will show retention to exam day, the thinnest margins, and whether your confidence matches your recall.</p>
+          <div class="empty-actions">
+            <button class="btn accent sm" data-action="bulk-add-open">Paste topics</button>
+            <button class="btn ghost sm" data-view="today">Back to today</button>
+          </div>
+        </div>
+      </section>` : `
       <section>
         <p class="eyebrow">Evidence, not vibes</p>
         <h1 class="display" style="font-size:clamp(38px,4vw,54px);margin-top:8px">Progress</h1>
@@ -750,14 +909,19 @@
 
       <section class="insight-grid">
         <div class="card">
-          <div class="card-head"><div><p class="micro">Metacognition</p><h2 class="section-title" style="font-size:24px;margin-top:4px">Confidence vs outcome</h2></div></div>
-          <div style="display:flex;align-items:baseline;gap:10px">
-            <span style="font-family:var(--serif);font-size:56px;line-height:1">${cal.n ? (calPts > 0 ? "+" : "") + calPts : "—"}</span>
+          <div class="card-head"><div><p class="micro">Metacognition</p><h2 class="section-title" style="font-size:24px;margin-top:4px">Confidence vs outcome ${sampleBadge}</h2></div></div>
+          ${calReady ? `<div style="display:flex;align-items:baseline;gap:10px">
+            <span style="font-family:var(--serif);font-size:56px;line-height:1">${(calPts > 0 ? "+" : "") + calPts}</span>
             <div><div style="font-size:12.5px;font-weight:500">${calLabel}</div><div class="small muted">points across ${cal.n} reviews</div></div>
           </div>
           <p class="small muted" style="margin-top:10px;line-height:1.55">You predict confidence before every reveal. The gap between prediction and performance is your calibration — the part of studying most students never see.</p>
           <div class="calib-rows">${calRows}</div>
-          <p class="small muted" style="margin-top:16px;font-size:11px;line-height:1.55">Bars right of centre: you felt surer than you performed. Outcome is scored 20 / 45 / 75 / 95 for Again / Hard / Good / Easy, so a 1–100 confidence is directly comparable.</p>
+          <p class="small muted" style="margin-top:16px;font-size:11px;line-height:1.55">Bars right of centre: you felt surer than you performed. Outcome is scored 20 / 45 / 75 / 95 for Again / Hard / Good / Easy, so a 1–100 confidence is directly comparable.</p>` : `<div class="gate">
+            <span class="gate-count">${cal.n}<span style="font-size:13px;color:var(--muted)">/${CALIBRATION_MIN}</span></span>
+            <span class="gate-bar"><span style="width:${Math.min(100, (cal.n / CALIBRATION_MIN) * 100)}%"></span></span>
+          </div>
+          <p class="small muted" style="margin-top:12px;line-height:1.55">Calibration unlocks after ${CALIBRATION_MIN} honest reviews. It currently has ${cal.n}. Until then, a single review can swing the number by 50 points and tell you nothing.</p>
+          <p class="small muted" style="margin-top:10px;line-height:1.55">You predict confidence before every reveal, then grade the recall. The difference between the two is calibration.</p>`}
         </div>
 
         <div class="stack">
@@ -776,7 +940,7 @@
       <section class="card" style="margin-top:22px">
         <div class="card-head"><div><p class="micro">Projection</p><h2 class="section-title" style="font-size:24px;margin-top:4px">Retention to ${fmtDay(examTs())}</h2><p class="section-sub">Each dip is a review scheduled at 85%. The line is projection, not measurement.</p></div><span class="small muted">assuming you keep the schedule</span></div>
         <div class="curve-grid">${curves}</div>
-      </section>`;
+      </section>`}`;
   }
 
   /* ------------------------------------------------------------------ modal */
@@ -827,6 +991,293 @@
     if (lastFocused && lastFocused.focus) lastFocused.focus();
   }
 
+  function showModal(markup, focusSel) {
+    lastFocused = document.activeElement;
+    modalRoot.innerHTML = `<div class="overlay" data-action="close-modal-bg"><div class="modal" role="dialog" aria-modal="true">${markup}</div></div>`;
+    document.body.style.overflow = "hidden";
+    if (focusSel) setTimeout(() => { const f = $(focusSel); if (f) f.focus(); }, 30);
+  }
+
+  function planFields(prefix, values) {
+    return `
+      <div class="field">
+        <label for="${prefix}Name">Your name</label>
+        <input class="input" id="${prefix}Name" maxlength="24" value="${esc(values.name)}" required>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="${prefix}Date">Exam date</label>
+          <input class="input" id="${prefix}Date" type="date" min="${isoLocal(startOfDay() + DAY)}" value="${isoLocal(values.examDate)}" required>
+        </div>
+        <div class="field">
+          <label for="${prefix}Goal">Reviews per day</label>
+          <input class="input" id="${prefix}Goal" type="number" min="1" max="20" step="1" value="${values.dailyGoal}" required>
+        </div>
+      </div>`;
+  }
+
+  function openPlanModal() {
+    showModal(`
+      <h2>Exam plan</h2>
+      <p class="sub">These three values drive the queue, the projection and every percentage in Mnemo.</p>
+      <form id="planForm">
+        ${planFields("p", {
+          name: state.student.name,
+          examDate: Math.max(examTs(), startOfDay() + DAY),
+          dailyGoal: state.student.dailyGoal
+        })}
+        <p class="error-text" id="planError"></p>
+        <p class="modal-note">Readiness is projected for this date, assuming you keep the schedule. Changing the date changes the projection immediately.</p>
+        <div class="modal-foot">
+          <div></div>
+          <div class="right">
+            <button type="button" class="btn ghost sm" data-action="close-modal">Cancel</button>
+            <button type="submit" class="btn accent sm">Save plan</button>
+          </div>
+        </div>
+      </form>`, "#pName");
+  }
+
+  function openFreshModal() {
+    showModal(`
+      <h2>Start your own plan</h2>
+      <p class="sub">This clears the sample topics and invented review history on this device. Nothing is sent anywhere.</p>
+      <form id="freshForm">
+        ${planFields("f", {
+          name: "",
+          examDate: startOfDay() + 30 * DAY,
+          dailyGoal: 6
+        })}
+        <p class="error-text" id="freshError"></p>
+        <p class="modal-note">Your exam date sets the horizon for every projection. You can change it later from the sidebar or the plan link on Today.</p>
+        <div class="modal-foot">
+          <div><button type="button" class="icon-btn" data-action="export-json">Download sample backup</button></div>
+          <div class="right">
+            <button type="button" class="btn ghost sm" data-action="close-modal">Cancel</button>
+            <button type="submit" class="btn accent sm">Create my plan</button>
+          </div>
+        </div>
+      </form>`, "#fName");
+  }
+
+  function parseBulk(text) {
+    const rows = [];
+    String(text || "").split(/\r?\n/).forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) return;
+      const parts = trimmed.split(/\s*[|\t]\s*/);
+      const title = parts[0].trim().slice(0, 80);
+      if (!title) return;
+      const note = parts.slice(1).join(" | ").trim().slice(0, 600);
+      rows.push({ title, note });
+    });
+    return rows.slice(0, MAX_BULK);
+  }
+
+  function openBulkModal() {
+    const needsNew = state.subjects.length === 0;
+    const options = state.subjects.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("") +
+      `<option value="__new" ${needsNew ? "selected" : ""}>New subject…</option>`;
+    showModal(`
+      <h2>Paste topics</h2>
+      <p class="sub">One topic per line. Add <b>| note</b> if you want a recall target; otherwise the topic starts with no note.</p>
+      <form id="bulkForm">
+        <div class="field">
+          <label for="bSubject">Subject</label>
+          <select id="bSubject">${options}</select>
+        </div>
+        <div class="field" id="bNewWrap" ${needsNew ? "" : 'style="display:none"'}>
+          <label for="bNew">New subject name</label>
+          <input class="input" id="bNew" maxlength="60" placeholder="e.g. Control Systems">
+        </div>
+        <div class="field">
+          <label for="bText">Topics</label>
+          <textarea class="input" id="bText" rows="8" placeholder="Z-transform & ROC | ROC is the set of z where X(z) converges.&#10;Butterworth filter order | 3 dB at cutoff; rolls off 20n dB per decade.&#10;Sampling theorem"></textarea>
+        </div>
+        <p class="bulk-hint">A pipe or tab separates topic from note. Lines starting with # are ignored. Up to ${MAX_BULK} topics at a time.</p>
+        <p class="bulk-preview" id="bulkPreview"></p>
+        <p class="error-text" id="bulkError"></p>
+        <div class="modal-foot">
+          <div></div>
+          <div class="right">
+            <button type="button" class="btn ghost sm" data-action="close-modal">Cancel</button>
+            <button type="submit" class="btn accent sm">Add topics</button>
+          </div>
+        </div>
+      </form>`, "#bText");
+
+    const sel = $("#bSubject");
+    const wrap = $("#bNewWrap");
+    const text = $("#bText");
+    const preview = $("#bulkPreview");
+    const syncSubject = () => {
+      if (!sel || !wrap) return;
+      wrap.style.display = sel.value === "__new" ? "" : "none";
+      if (sel.value === "__new") { const input = $("#bNew"); if (input) input.focus(); }
+    };
+    if (sel) sel.addEventListener("change", syncSubject);
+    if (text) {
+      text.addEventListener("input", () => {
+        const n = parseBulk(text.value).length;
+        preview.textContent = n ? `${plural(n, "topic")} ready` : "Nothing parsed yet.";
+      });
+    }
+  }
+
+  function normalizeImportedState(data) {
+    if (!data || !Array.isArray(data.topics) || !Array.isArray(data.subjects)) {
+      throw new Error("not a backup");
+    }
+    if (!data.subjects.length && data.topics.length) throw new Error("missing subjects");
+    const subjects = data.subjects.map((s, i) => ({
+      id: String(s.id || uid("s_")),
+      name: String(s.name || "Subject").slice(0, 60),
+      color: COLORS[i % COLORS.length],
+      weight: Number(s.weight) || 1
+    }));
+    const ids = new Set(subjects.map((s) => s.id));
+    const topics = data.topics.map((t) => ({
+      id: String(t.id || uid("t_")),
+      subjectId: ids.has(t.subjectId) ? t.subjectId : (subjects[0] ? subjects[0].id : null),
+      title: String(t.title || "Untitled").slice(0, 80),
+      note: String(t.note || "").slice(0, 600),
+      stability: clamp(Number(t.stability) || 0.5, 0.2, 180),
+      lastReviewed: Number(t.lastReviewed) > 0 ? Number(t.lastReviewed) : null,
+      reps: Math.max(0, Number(t.reps) || 0),
+      history: Array.isArray(t.history) ? t.history.filter((h) => h && GRADE[h.grade]).slice(-200) : []
+    })).filter((t) => t.subjectId);
+    if (data.topics.length && !topics.length) throw new Error("no usable topics");
+    return {
+      version: 2,
+      sample: Boolean(data.sample),
+      student: normalizeStudent(data.student),
+      streak: data.streak && Number.isFinite(data.streak.count) ? data.streak : { count: 0, lastDay: 0 },
+      subjects,
+      topics
+    };
+  }
+
+  function openDataModal() {
+    showModal(`
+      <h2>Backup &amp; data</h2>
+      <p class="sub">Everything lives in this browser. Export a copy before switching devices, clearing storage, or starting a new plan.</p>
+      <div class="data-list">
+        <div class="data-row">
+          <div><h4>Download backup</h4><p>JSON with topics, notes, stability and review history.</p></div>
+          <div class="data-actions">
+            <button class="icon-btn" data-action="view-export" data-kind="json">View</button>
+            <button class="btn ghost sm" data-action="export-json">Download</button>
+          </div>
+        </div>
+        <div class="data-row">
+          <div><h4>Restore a backup</h4><p>Replaces this device's plan. A copy of the current plan is kept locally and downloaded if your browser allows it.</p></div>
+          <button class="btn ghost sm" data-action="import-json">Choose file</button>
+        </div>
+        ${hasLocalBackup() ? `<div class="data-row">
+          <div><h4>Restore previous plan</h4><p>The plan replaced by your last start-fresh or import. Kept in this browser.</p></div>
+          <button class="btn ghost sm" data-action="restore-backup">Restore</button>
+        </div>` : ""}
+        <div class="data-row">
+          <div><h4>Calendar reminders</h4><p>The next ${clamp(daysToExam() || 21, 1, 21)} days of due reviews as an .ics file for Google or Apple Calendar.</p></div>
+          <div class="data-actions">
+            <button class="icon-btn" data-action="view-export" data-kind="ics">View</button>
+            <button class="btn ghost sm" data-action="export-ics">Download .ics</button>
+          </div>
+        </div>
+        <div class="data-row">
+          <div><h4>Install as an app</h4><p>${installPrompt ? "Add Mnemo to your home screen and keep it available offline." : "Open over http(s) in Chrome or Edge, then use Install app."}</p></div>
+          <button class="btn ghost sm" data-action="install-app" ${installPrompt ? "" : "disabled"}>Install</button>
+        </div>
+        <div class="data-row">
+          <div><h4>Profile</h4><p>${state.sample ? "Sample data — seeded topics with invented history." : "Your own plan."} ${plural(state.topics.length, "topic")}, ${plural(state.subjects.length, "subject")}.</p></div>
+          <button class="btn ghost sm" data-action="${state.sample ? "start-fresh" : "edit-plan"}">${state.sample ? "Start my own plan" : "Edit plan"}</button>
+        </div>
+      </div>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+      <p class="modal-note">No account and no server. Clearing browser data deletes this plan unless you export it. The demo controls in the sidebar are for the sample profile only.</p>
+      <div class="modal-foot">
+        <div></div>
+        <div class="right"><button class="btn ghost sm" data-action="close-modal">Done</button></div>
+      </div>`);
+
+    const fileInput = $("#importFile");
+    if (fileInput) {
+      fileInput.addEventListener("change", (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const imported = normalizeImportedState(JSON.parse(String(reader.result)));
+            saveLocalBackup(state);
+            downloadFile(`mnemo-before-import-${isoLocal(Date.now())}.json`, "application/json", JSON.stringify(state, null, 2));
+            state = imported;
+            persist();
+            closeModal();
+            ui.subject = "all";
+            ui.query = "";
+            setView("today");
+            toast(`Imported ${plural(state.topics.length, "topic")}. Previous plan saved as a local backup.`);
+          } catch (err) {
+            toast("That file is not a Mnemo backup.");
+          }
+        };
+        reader.readAsText(file);
+      });
+    }
+  }
+
+  function exportJSON() {
+    downloadFile(`mnemo-backup-${isoLocal(Date.now())}.json`, "application/json", JSON.stringify(state, null, 2));
+    toast("Backup downloaded.");
+  }
+
+  function exportICS() {
+    if (!state.topics.length) { toast("Add topics before exporting a calendar."); return; }
+    const ics = buildCalendarICS();
+    if (ics.indexOf("BEGIN:VEVENT") === -1) { toast("No reviews fall in the next 21 days."); return; }
+    downloadFile("mnemo-calendar.ics", "text/calendar;charset=utf-8", ics);
+    toast("Calendar file downloaded. Import it into Google or Apple Calendar.");
+  }
+
+  function installApp() {
+    if (!installPrompt) { toast("Use your browser menu → Install app."); return; }
+    installPrompt.prompt();
+    installPrompt.userChoice.finally(() => { installPrompt = null; });
+  }
+
+  function openExportView(kind) {
+    const isJson = kind === "json";
+    const content = isJson ? JSON.stringify(state, null, 2) : buildCalendarICS();
+    showModal(`
+      <h2>${isJson ? "Backup JSON" : "Calendar file"}</h2>
+      <p class="sub">${isJson ? "Select and copy this if downloads are blocked in your browser. Paste it into a file named mnemo-backup.json." : "Import this .ics into Google or Apple Calendar. If the download is blocked, copy this text into a file named mnemo-calendar.ics."}</p>
+      <div class="field">
+        <textarea class="input code-area" id="exportText" rows="12" readonly spellcheck="false">${esc(content)}</textarea>
+      </div>
+      <div class="modal-foot">
+        <div><button class="icon-btn" data-action="open-data">← Back to data</button></div>
+        <div class="right">
+          <button class="btn ghost sm" data-action="copy-export">Copy</button>
+          <button class="btn accent sm" data-action="download-export" data-kind="${kind}">Download</button>
+        </div>
+      </div>`, "#exportText");
+  }
+
+  function copyExport() {
+    const ta = $("#exportText");
+    if (!ta) return;
+    ta.select();
+    const done = () => toast("Copied to clipboard.");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(ta.value).then(done).catch(() => {
+        try { document.execCommand("copy"); done(); } catch (err) { toast("Select the text and copy manually."); }
+      });
+    } else {
+      try { document.execCommand("copy"); done(); } catch (err) { toast("Select the text and copy manually."); }
+    }
+  }
+
   /* ----------------------------------------------------------------- review */
 
   let session = null;
@@ -837,6 +1288,7 @@
       items: topics.slice(),
       index: 0,
       results: [],
+      skipped: 0,
       predicted: 60,
       revealed: false,
       returnView: ui.view,
@@ -906,7 +1358,10 @@
         </div>
         <div class="review-foot">
           <button class="btn accent" data-action="reveal" id="revealBtn">Reveal my note</button>
-          <button class="review-note-link" data-action="close-review">End session</button>
+          <div style="display:flex;gap:16px;align-items:center">
+            <button class="review-note-link" data-action="skip-topic">Skip for now</button>
+            <button class="review-note-link" data-action="close-review">End session</button>
+          </div>
         </div>
       </div>`;
 
@@ -934,6 +1389,15 @@
   function reveal() {
     if (!session) return;
     session.revealed = true;
+    renderReview();
+  }
+
+  function skipTopic() {
+    if (!session || session.index >= session.items.length) return;
+    session.skipped = (session.skipped || 0) + 1;
+    session.index += 1;
+    session.revealed = false;
+    session.predicted = 60;
     renderReview();
   }
 
@@ -967,13 +1431,14 @@
     const gap = Math.round(predictedAvg - scoreAvg * 100);
     const endAvg = n ? session.results.reduce((s, r) => s + retention(topicOf(r.id) || {}), 0) / n : 0;
     const lift = Math.round((endAvg - session.startAvg) * 100);
-    const msg = n === 0
+    const msgBase = n === 0
       ? "No topics graded this session. Nothing was lost."
       : Math.abs(gap) <= 8
         ? "Your confidence matched your recall closely. That is genuine exam-day composure — keep grading honestly."
         : gap > 0
           ? `You felt about ${gap} points surer than you performed. Mnemo will shorten the interval on these, so the gap cannot grow quietly.`
           : `You were ${Math.abs(gap)} points harder on yourself than your recall deserved. Trust the evidence, not the anxiety.`;
+    const msg = session.skipped ? `${msgBase} ${plural(session.skipped, "topic")} skipped for now.` : msgBase;
 
     reviewRoot.innerHTML = `
       <div class="review" role="dialog" aria-modal="true" aria-label="Session summary">
@@ -1018,7 +1483,70 @@
   function handleAction(action, node) {
     switch (action) {
       case "new-topic":
-        openTopicModal();
+        if (!state.subjects.length) openBulkModal();
+        else openTopicModal();
+        break;
+      case "edit-plan":
+        openPlanModal();
+        break;
+      case "start-fresh":
+        openFreshModal();
+        break;
+      case "bulk-add-open":
+        openBulkModal();
+        break;
+      case "open-data":
+        openDataModal();
+        break;
+      case "export-json":
+        exportJSON();
+        break;
+      case "export-ics":
+        exportICS();
+        break;
+      case "import-json": {
+        const input = $("#importFile");
+        if (input) input.click();
+        else toast("Open Backup & data first.");
+        break;
+      }
+      case "install-app":
+        installApp();
+        break;
+      case "view-export":
+        openExportView(node.dataset.kind === "ics" ? "ics" : "json");
+        break;
+      case "download-export":
+        if (node.dataset.kind === "ics") exportICS(); else exportJSON();
+        break;
+      case "copy-export":
+        copyExport();
+        break;
+      case "restore-backup": {
+        try {
+          const raw = localStorage.getItem(BACKUP_KEY);
+          if (!raw) { toast("No previous plan is saved."); break; }
+          const previous = normalizeImportedState(JSON.parse(raw));
+          saveLocalBackup(state);
+          state = previous;
+          persist();
+          closeModal();
+          ui.subject = "all";
+          ui.query = "";
+          setView("today");
+          toast("Previous plan restored.");
+        } catch (err) {
+          toast("The saved backup could not be read.");
+        }
+        break;
+      }
+      case "skip-topic":
+        skipTopic();
+        break;
+      case "clear-filters":
+        ui.subject = "all";
+        ui.query = "";
+        renderLibrary();
         break;
       case "edit-topic": {
         const id = node.dataset.id;
@@ -1160,15 +1688,99 @@
   });
 
   document.addEventListener("submit", (e) => {
+    if (e.target.id === "planForm") {
+      e.preventDefault();
+      const name = $("#pName").value.trim();
+      const goal = clamp(parseInt($("#pGoal").value, 10) || 6, 1, 20);
+      const date = new Date($("#pDate").value + "T00:00:00");
+      if (!name) { $("#planError").textContent = "Add a name for the plan."; return; }
+      if (isNaN(date.getTime()) || date.getTime() <= startOfDay()) { $("#planError").textContent = "Choose a date after today."; return; }
+      state.student = { name: name.slice(0, 24), examDate: startOfDay(date.getTime()), dailyGoal: goal };
+      persist();
+      closeModal();
+      render();
+      toast("Plan updated.");
+      return;
+    }
+
+    if (e.target.id === "freshForm") {
+      e.preventDefault();
+      const name = $("#fName").value.trim();
+      const goal = clamp(parseInt($("#fGoal").value, 10) || 6, 1, 20);
+      const date = new Date($("#fDate").value + "T00:00:00");
+      if (!name) { $("#freshError").textContent = "Add a name so the plan is yours."; return; }
+      if (isNaN(date.getTime()) || date.getTime() <= startOfDay()) { $("#freshError").textContent = "Choose a date after today."; return; }
+      saveLocalBackup(state);
+      state = {
+        version: 2,
+        sample: false,
+        student: { name: name.slice(0, 24), examDate: startOfDay(date.getTime()), dailyGoal: goal },
+        streak: { count: 0, lastDay: 0 },
+        subjects: [],
+        topics: []
+      };
+      persist();
+      closeModal();
+      ui.subject = "all";
+      ui.query = "";
+      setView("library");
+      toast("Plan created. Paste your topics next.");
+      openBulkModal();
+      return;
+    }
+
+    if (e.target.id === "bulkForm") {
+      e.preventDefault();
+      let subjectId = $("#bSubject").value;
+      if (subjectId === "__new") {
+        const newName = $("#bNew").value.trim();
+        if (!newName) { $("#bulkError").textContent = "Name the new subject."; return; }
+        const existing = state.subjects.find((s) => s.name.toLowerCase() === newName.toLowerCase());
+        if (existing) {
+          subjectId = existing.id;
+        } else {
+          const subject = {
+            id: uid("s_"), name: newName.slice(0, 60),
+            color: COLORS[state.subjects.length % COLORS.length], weight: 1
+          };
+          state.subjects.push(subject);
+          subjectId = subject.id;
+        }
+      }
+      const rows = parseBulk($("#bText").value);
+      if (!rows.length) { $("#bulkError").textContent = "Paste at least one topic, one per line."; return; }
+      let added = 0;
+      let skipped = 0;
+      rows.forEach((row) => {
+        const duplicate = state.topics.some((t) => t.subjectId === subjectId && t.title.toLowerCase() === row.title.toLowerCase());
+        if (duplicate) { skipped += 1; return; }
+        state.topics.push({
+          id: uid("t_"), subjectId, title: row.title, note: row.note,
+          stability: 0.5, lastReviewed: null, reps: 0, history: []
+        });
+        added += 1;
+      });
+      persist();
+      closeModal();
+      render();
+      toast(`${plural(added, "topic")} added${skipped ? `, ${skipped} already existed` : ""}.${added ? " They are in today's queue." : ""}`);
+      return;
+    }
+
     if (e.target.id === "topicForm") {
       e.preventDefault();
       const id = e.target.dataset.id;
       const title = $("#fTitle").value.trim();
       const note = $("#fNote").value.trim();
-      const subjectId = $("#fSubject").value;
+      let subjectId = $("#fSubject").value;
       if (!title) {
         $("#formError").textContent = "Give the topic a name.";
         return;
+      }
+      if (!subjectId || !state.subjects.some((s) => s.id === subjectId)) {
+        const subject = { id: uid("s_"), name: "General", color: COLORS[state.subjects.length % COLORS.length], weight: 1 };
+        state.subjects.push(subject);
+        subjectId = subject.id;
       }
       if (id) {
         const t = topicOf(id);
@@ -1208,6 +1820,11 @@
   });
 
   /* ------------------------------------------------------------------- boot */
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    installPrompt = e;
+  });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.target.matches(".plan-row, .topic-card")) {

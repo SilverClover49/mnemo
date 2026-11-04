@@ -10,26 +10,37 @@ Mnemo schedules revision by the forgetting curve instead of by a calendar. You a
 
 ---
 
-## Why it exists
+## What it is
 
-Students reread notes, feel productive, and blank in the exam hall. Reading builds familiarity; only retrieval builds memory. Mnemo keeps a stability score for every topic, predicts when retention drops below 85%, and puts that topic in today's queue — so study time goes to what is actually leaking.
+Rereading notes builds familiarity, not memory. Mnemo keeps a stability score for every topic, predicts when retention drops below 85%, and puts that topic in today's queue. Study time goes to what is actually leaking, and the Progress screen shows what will survive to exam day.
 
-## The loop, start to finish
+## Features
 
-1. **Add what you're learning.** One idea per topic plus the note you want to reproduce. A subject and a note are the only inputs.
-2. **Review at the edge of forgetting.** When predicted retention falls below 85%, the topic becomes due. The queue is ordered by decay, then subject weight.
-3. **Predict, then reveal.** Commit to a confidence percentage before seeing the note, then grade what you produced: Again / Hard / Good / Easy.
-4. **Read the projection.** Progress simulates the reviews still ahead and reports retention on exam day, the thinnest margins, and where confidence and recall disagree.
+**Plan settings.** Name, exam date and daily review goal drive every number. Change the date and the queue, ring and projection recalculate immediately. Reachable from the sidebar, the Today plan link, or Backup & data.
 
-| Screen | What it answers |
-|---|---|
-| **Today** | What should I study in the next hour, and why? |
-| **Library** | What am I learning, and what note will I recall against? |
-| **Progress** | What will survive to exam day? Where is my confidence wrong? |
-| **How it works** | How does the whole system work, including the build? |
+**30-second setup.** Paste a list instead of typing topics one by one:
 
-![Progress screen](assets/progress.png)
-![Recall session](assets/review.png)
+```
+Z-transform & ROC | ROC is the set of z where X(z) converges.
+Butterworth filter order | 3 dB at cutoff; rolls off 20n dB per decade.
+Sampling theorem
+```
+
+A pipe or tab separates the topic from the note. `#` lines are ignored. Up to 200 topics at once, with duplicate detection and a new-subject field in the same dialog.
+
+**Honest sample profile.** A first run ships with seeded ECE topics and invented review history, labelled in the sidebar and on Today. "Use my own plan" clears it and starts empty; the previous plan is kept locally as a rollback.
+
+**Daily recall.** The queue is ordered by decay, then subject weight. A session asks you to explain the topic, predict confidence, reveal the note, and grade Again / Hard / Good / Easy. Buttons show the resulting next interval. Keys 1–4 grade, space reveals, and topics can be skipped without penalty.
+
+**Calibration that waits for evidence.** Confidence is compared with the grade outcome (Again 20 / Hard 45 / Good 75 / Easy 95). The score is hidden until 8 honest reviews, because one review can swing it by 50 points.
+
+**Progress.** Projected exam readiness, retention-to-exam curves (each dip is a scheduled review), thinnest margins with projected *and* current retention, and 14-day review activity.
+
+**Backup and restore.** Export JSON, import it on another device, or restore the plan replaced by the last import/start-fresh. Every import keeps a local rollback and attempts a download first.
+
+**Calendar reminders.** Export the next 21 days of due reviews as `.ics` for Google or Apple Calendar. Overdue topics are clamped to today, so the calendar never starts in the past.
+
+**Installable and offline-capable.** `manifest.webmanifest` plus a service worker cache the app shell. Install from Chrome/Edge when served over http(s).
 
 ## Run it
 
@@ -41,16 +52,18 @@ python -m http.server 8080
 # open http://localhost:8080
 ```
 
-No build step, no dependencies, no API keys. State lives in `localStorage`; the demo ships with seeded ECE topics so nothing is empty on first load. Tested in Chromium at 1280×720, 1536×776 and 390×844.
+No build step, no dependencies, no API keys. State lives in `localStorage` under `mnemo.v1` (rollback under `mnemo.v1.backup`). Tested at 1280×720, 1536×776 and 390×844 in Chromium.
+
+Some browsers block programmatic downloads from `file://`. Backup and calendar dialogs therefore include a **View / Copy** fallback that always works.
 
 ## 60-second demo
 
-1. **Today** — 8 topics are below threshold; readiness is projected for 12 Dec.
-2. **Start today's recall** → set confidence (say 80%) → reveal → press **3** (Good). The four buttons show the next interval each grade would produce.
-3. Finish → the summary shows **retention lift** and the **confidence gap**.
-4. **Progress** — calibration by subject, "thinnest margins" with projected *and* current retention, retention-to-exam curves.
-5. **How it works** — the four steps, the formula, and the architecture.
-6. Click **Demo · skip 7 days ahead** (sidebar, or the demo row on Today): retention collapses from ~76% to ~28% and the queue refills. **Reset demo data** restores everything.
+1. **Today** — sample banner, 8 due topics, readiness projected for 12 Dec. Point at the banner: the history is seeded, not the judge's.
+2. **Start today's recall** → set confidence (say 80%) → reveal → press **3** (Good). Show the interval each grade would produce.
+3. Finish → summary shows retention lift and the confidence gap.
+4. **Progress** — calibration (sample-labelled), thinnest margins with current retention, retention-to-exam curves.
+5. **Demo · skip 7 days ahead** — retention collapses from ~76% to ~28% and the queue refills. Reset restores the seed.
+6. **Backup & data** — show JSON view, calendar `.ics`, and the start-my-own-plan path.
 
 ## How the math works
 
@@ -70,31 +83,42 @@ Everything is plain arithmetic. Given the same stored state and the same day, th
 
 **Front end — three files, no framework.** `index.html`, `style.css`, one `app.js`. Every view renders from a single state object, so the interface cannot drift from the data. Charts are hand-written SVG. Fonts are the only network request, with serif/system fallbacks.
 
-**Data layer — no server.** One JSON object in `localStorage` under `mnemo.v1`. All scheduling runs in the page, which keeps notes private and makes the demo offline-safe. The trade-off is honest: per-device data only, no accounts or sync.
+**Data layer — no server.** One JSON object in `localStorage`. All scheduling runs in the page, which keeps notes private and makes the demo offline-safe. The trade-off is honest: per-device data only, no accounts or sync.
 
 **AI — used to build it, not to fake it.** AI drafted the specification and seed content, then two zero-context reviewers attacked the design before implementation using the Elephant–Goldfish method (one reviewer ran on Qwen 3.8 Flash). The runtime scheduler deliberately contains no model, so every score is reproducible and explainable. A sensible next step is opt-in LLM-generated recall prompts — not a hidden model in the readiness number.
 
 ![How it works](assets/guide.png)
+![Progress screen](assets/progress.png)
+![Recall session](assets/review.png)
 
-**Limits.** Grades are self-reported, so honesty matters. Retention is a model, not a measurement. Readiness assumes the schedule is kept and is not a predicted mark.
+**Limits.** Grades are self-reported, so honesty matters. Retention is a model, not a measurement. Readiness assumes the schedule is kept and is not a predicted mark. Data is per-browser; export a backup before switching devices.
+
+## For the frontend team
+
+- **State:** one object, shape `{ student, streak, subjects, topics, sample }`. Topic fields: `title`, `note`, `stability`, `lastReviewed`, `reps`, `history[]`. Don't rename the storage key without a migration in `loadState`.
+- **Rendering:** one `render()` dispatcher; `renderToday`, `renderLibrary`, `renderInsights`, `renderGuide`. Add a view by adding a branch, a nav button, and a `crumbFor` entry, then guard `setView`.
+- **Styling:** tokens are at the top of `style.css` (`--paper`, `--olive`, `--red`, `--line`). New surfaces should reuse `.card`, `.btn`, `.field`, `.micro`, `.display`.
+- **PWA:** `sw.js` is cache-first. **Bump `CACHE` (`mnemo-v3`) on every deploy** or users will keep the old shell. Icons live in `assets/icon-192.png` and `icon-512.png`.
+- **Testing:** verify at 390px and 1280px, keyboard the whole review loop, and run an axe pass. Current build: 0 axe violations.
+- **Don't** claim AI is in the runtime scheduler; it isn't, and the guide says so.
 
 ## Files
 
 | Path | Purpose |
 |---|---|
-| `index.html` | Shell, navigation, mount points |
-| `style.css` | Design tokens and all components |
-| `app.js` | Memory engine, views, review session, charts, persistence |
-| `assets/` | Screenshots used above |
-| `docs/concepts_brief.md` | Product brief |
-| `docs/design_draft.md` | Original data model and screens |
-| `docs/redesign_draft.md` | Olive/red redesign and explainability brief |
+| `index.html` | Shell, navigation, modal/review mounts, service worker registration |
+| `style.css` | Design tokens and components |
+| `app.js` | Memory engine, views, review session, backup/calendar, persistence |
+| `manifest.webmanifest` | Install metadata |
+| `sw.js` | Offline cache for the app shell |
+| `assets/` | Screenshots and PWA icons |
+| `docs/` | Product brief, design draft, redesign brief |
 
 ## Judging map
 
-- **Functionality (35%)** — working scheduler, persistence, topic CRUD, subject filters, search, keyboard grading, demo fast-forward, reset.
+- **Functionality (35%)** — scheduler, persistence, topic CRUD, subject filters, search, keyboard grading, plan settings, bulk paste, backup/restore, calendar export, skip, demo fast-forward.
 - **Relevance (20%)** — retention and exam preparation for students; nothing decorative.
-- **UX (15%)** — four-step loop explained in-product, honest empty states, responsive to phone width, axe contrast clean.
+- **UX (15%)** — four-step loop explained in-product, honest sample labelling, calibration gate, empty states, responsive, axe contrast clean.
 - **Rapid execution & polish (15%)** — no build step, seeded demo, consistent olive/red system, no dead buttons.
 - **Innovation (10%)** — forgetting-curve scheduling plus a metacognitive confidence-gap metric.
 - **Pitch (5%)** — the demo above runs in under a minute.

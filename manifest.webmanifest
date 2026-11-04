@@ -1,0 +1,16 @@
+{
+  "name": "Mnemo — memory-aware study desk",
+  "short_name": "Mnemo",
+  "description": "Forgetting-curve revision scheduling, active recall, and confidence calibration for students.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f2eddf",
+  "theme_color": "#f2eddf",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
